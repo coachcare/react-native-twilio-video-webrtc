@@ -148,19 +148,10 @@ export default class extends Component {
 
     this._subscriptions = []
     this._eventEmitter = new NativeEventEmitter(TWVideoModule)
-
-    this.setLocalVideoEnabled = this.setLocalVideoEnabled.bind(this)
-    this.setLocalAudioEnabled = this.setLocalAudioEnabled.bind(this)
-    this.flipCamera = this.flipCamera.bind(this)
-    this.connect = this.connect.bind(this)
-    this.disconnect = this.disconnect.bind(this)
-    this.sendString = this.sendString.bind(this)
-    this.setRemoteAudioPlayback = this.setRemoteAudioPlayback.bind(this)
   }
 
   componentWillMount () {
     this._registerEvents()
-    this._startLocalVideo()
     this._startLocalAudio()
   }
 
@@ -224,9 +215,10 @@ export default class extends Component {
    * Connect to given room name using the JWT access token
    * @param  {String} roomName    The connecting room name
    * @param  {String} accessToken The Twilio's JWT access token
+   * @param  {String} encodingParameters Control Encoding config
    */
-  connect ({ roomName, accessToken }) {
-    TWVideoModule.connect(accessToken, roomName)
+  connect ({ roomName, accessToken, enableVideo = true, encodingParameters }) {
+    TWVideoModule.connect(accessToken, roomName, enableVideo, encodingParameters)
   }
 
   /**
@@ -234,6 +226,34 @@ export default class extends Component {
    */
   disconnect () {
     TWVideoModule.disconnect()
+  }
+
+  /**
+   * Publish a local audio track
+   */
+  publishLocalAudio () {
+    TWVideoModule.publishLocalAudio()
+  }
+
+  /**
+   * Publish a local video track
+   */
+  publishLocalVideo () {
+    TWVideoModule.publishLocalVideo()
+  }
+
+  /**
+   * Unpublish a local audio track
+   */
+  unpublishLocalAudio () {
+    TWVideoModule.unpublishLocalAudio()
+  }
+
+  /**
+   * Unpublish a local video track
+   */
+  unpublishLocalVideo () {
+    TWVideoModule.unpublishLocalVideo()
   }
 
   /**

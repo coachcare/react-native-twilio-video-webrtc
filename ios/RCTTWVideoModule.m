@@ -65,6 +65,7 @@ TVIVideoFormat *RCTTWVideoModuleCameraSourceSelectVideoFormatBySize(AVCaptureDev
 @property (strong, nonatomic) TVILocalVideoTrack* localVideoTrack;
 @property (strong, nonatomic) TVILocalAudioTrack* localAudioTrack;
 @property (strong, nonatomic) TVILocalDataTrack* localDataTrack;
+@property (strong, nonatomic) TVILocalParticipant* localParticipant;
 @property (strong, nonatomic) TVIRoom *room;
 @property (nonatomic) BOOL listening;
 
@@ -75,6 +76,14 @@ TVIVideoFormat *RCTTWVideoModuleCameraSourceSelectVideoFormatBySize(AVCaptureDev
 @synthesize bridge = _bridge;
 
 RCT_EXPORT_MODULE();
+
+- (void)dealloc {
+  // We are done with camera
+  if (self.camera) {
+      [self.camera stopCapture];
+      self.camera = nil;
+  }
+}
 
 - (dispatch_queue_t)methodQueue {
   return dispatch_get_main_queue();
@@ -108,6 +117,10 @@ RCT_EXPORT_MODULE();
 
 - (void)addLocalView:(TVIVideoView *)view {
   [self.localVideoTrack addRenderer:view];
+  [self updateLocalViewMirroring:view];
+}
+
+- (void)updateLocalViewMirroring:(TVIVideoView *)view {
   if (self.camera && self.camera.device.position == AVCaptureDevicePositionFront) {
     view.mirror = true;
   }
@@ -161,6 +174,9 @@ RCT_EXPORT_METHOD(startLocalVideo) {
           TVIVideoFormat *startFormat,
           NSError *error) {
       if (!error) {
+          for (TVIVideoView *renderer in self.localVideoTrack.renderers) {
+            [self updateLocalViewMirroring:renderer];
+          }
           [self sendEventCheckingListenerWithName:cameraDidStart body:nil];
       }
   }];
@@ -179,6 +195,26 @@ RCT_EXPORT_METHOD(stopLocalAudio) {
   self.localAudioTrack = nil;
 }
 
+RCT_EXPORT_METHOD(publishLocalVideo) {
+  TVILocalParticipant *localParticipant = self.room.localParticipant;
+  [localParticipant publishVideoTrack:self.localVideoTrack];
+}
+
+RCT_EXPORT_METHOD(publishLocalAudio) {
+  TVILocalParticipant *localParticipant = self.room.localParticipant;
+  [localParticipant publishAudioTrack:self.localAudioTrack];
+}
+
+RCT_EXPORT_METHOD(unpublishLocalVideo) {
+  TVILocalParticipant *localParticipant = self.room.localParticipant;
+  [localParticipant unpublishVideoTrack:self.localVideoTrack];
+}
+
+RCT_EXPORT_METHOD(unpublishLocalAudio) {
+  TVILocalParticipant *localParticipant = self.room.localParticipant;
+  [localParticipant unpublishAudioTrack:self.localAudioTrack];
+}
+
 RCT_REMAP_METHOD(setLocalAudioEnabled, enabled:(BOOL)enabled setLocalAudioEnabledWithResolver:(RCTPromiseResolveBlock)resolve
     rejecter:(RCTPromiseRejectBlock)reject) {
   [self.localAudioTrack setEnabled:enabled];
@@ -188,9 +224,24 @@ RCT_REMAP_METHOD(setLocalAudioEnabled, enabled:(BOOL)enabled setLocalAudioEnable
 
 RCT_REMAP_METHOD(setLocalVideoEnabled, enabled:(BOOL)enabled setLocalVideoEnabledWithResolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject) {
-  [self.localVideoTrack setEnabled:enabled];
+  if(self.localVideoTrack != nil){
+      [self.localVideoTrack setEnabled:enabled];
+      resolve(@(enabled));
+  } else if(enabled) {
+      [self createLocalVideoTrack];
+      resolve(@true);
+  } else {
+      resolve(@false);
+  }
+}
 
-  resolve(@(enabled));
+-(void)createLocalVideoTrack {
+  [self startLocalVideo];
+  // Publish video so other Room Participants can subscribe
+  // This check is required when TVICameraSource return nil Eg: simulator
+  if(self.localVideoTrack != nil){
+    [self.localParticipant publishVideoTrack:self.localVideoTrack];
+  }
 }
 
 
@@ -323,7 +374,23 @@ RCT_EXPORT_METHOD(getStats) {
   }
 }
 
-RCT_EXPORT_METHOD(connect:(NSString *)accessToken roomName:(NSString *)roomName) {
+-(void)enableLocalVideoAtCreationTime:(BOOL *)enableVideo {
+    if(enableVideo){
+      if (self.localVideoTrack == nil) {
+          // We disabled video in a previous call, attempt to re-enable
+          [self startLocalVideo];
+      } else {
+          [self.localVideoTrack setEnabled:true];
+      }
+    } else {
+        [self stopLocalVideo];
+    }
+}
+
+RCT_EXPORT_METHOD(connect:(NSString *)accessToken roomName:(NSString *)roomName enableVideo:(BOOL *)enableVideo encodingParameters:(NSDictionary *)encodingParameters) {
+
+  [self enableLocalVideoAtCreationTime: enableVideo];
+
   TVIConnectOptions *connectOptions = [TVIConnectOptions optionsWithToken:accessToken block:^(TVIConnectOptionsBuilder * _Nonnull builder) {
     if (self.localVideoTrack) {
       builder.videoTracks = @[self.localVideoTrack];
@@ -341,6 +408,17 @@ RCT_EXPORT_METHOD(connect:(NSString *)accessToken roomName:(NSString *)roomName)
     }
 
     builder.roomName = roomName;
+    
+    if(encodingParameters[@"enableH264Codec"]){
+      builder.preferredVideoCodecs = @[ [TVIH264Codec new] ];
+    }
+      
+    if(encodingParameters[@"audioBitrate"] || encodingParameters[@"videoBitrate"]){
+      NSInteger audioBitrate = [encodingParameters[@"audioBitrate"] integerValue];
+      NSInteger videoBitrate = [encodingParameters[@"videoBitrate"] integerValue];
+      builder.encodingParameters = [[TVIEncodingParameters alloc] initWithAudioBitrate:(audioBitrate) ? audioBitrate : 40 videoBitrate:(videoBitrate) ? videoBitrate : 1500];
+    }
+      
   }];
 
   self.room = [TwilioVideoSDK connectWithOptions:connectOptions delegate:self];
@@ -406,13 +484,14 @@ RCT_EXPORT_METHOD(disconnect) {
     p.delegate = self;
     [participants addObject:[p toJSON]];
   }
-  TVILocalParticipant *localParticipant = room.localParticipant;
-  [participants addObject:[localParticipant toJSON]];
-    [self sendEventCheckingListenerWithName:roomDidConnect body:@{ @"roomName" : room.name , @"roomSid": room.sid, @"participants" : participants }];
+  self.localParticipant = room.localParticipant;
+  [participants addObject:[self.localParticipant toJSON]];
+  [self sendEventCheckingListenerWithName:roomDidConnect body:@{ @"roomName" : room.name , @"roomSid": room.sid, @"participants" : participants }];
 
 }
 
 - (void)room:(TVIRoom *)room didDisconnectWithError:(nullable NSError *)error {
+  self.localDataTrack = nil;
   self.room = nil;
 
   NSMutableDictionary *body = [@{ @"roomName": room.name, @"roomSid": room.sid } mutableCopy];
@@ -424,6 +503,7 @@ RCT_EXPORT_METHOD(disconnect) {
 }
 
 - (void)room:(TVIRoom *)room didFailToConnectWithError:(nonnull NSError *)error{
+  self.localDataTrack = nil;
   self.room = nil;
 
   NSMutableDictionary *body = [@{ @"roomName": room.name, @"roomSid": room.sid } mutableCopy];
